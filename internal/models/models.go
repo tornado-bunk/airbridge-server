@@ -28,11 +28,11 @@ type Client struct {
 // Session represents an active pairing between a Mac and an Android device
 type Session struct {
 	PairingID string
-	
-	Mac       *Client
-	Android   *Client
 
-	// Optional: IP and Port reported by the Mac
+	Mac     *Client
+	Android *Client
+
+	// IP and Port reported by the Mac
 	MacLocalIP string
 	MacPort    int
 
