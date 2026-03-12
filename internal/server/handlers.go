@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/tornado-bunk/airbridge-server/internal/models"
@@ -72,6 +73,11 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 // handleMessage routes messages depending on their parsed action
 func handleMessage(hub *Hub, client *models.Client, session *models.Session, message []byte) {
 	slog.Debug("Received message", "role", client.Role, "len", len(message))
+
+	// Refresh the session timeout so the Heartbeat monitor knows it's active
+	session.Lock()
+	session.UpdatedAt = time.Now()
+	session.Unlock()
 
 	// Try parsing it as JSON to see if it's a control message
 	baseMsg, err := models.ParseIncomingMessage(message)
