@@ -16,6 +16,7 @@ async def simulate_mac():
             "action": "register",
             "role": "mac",
             "pairingId": PAIRING_ID,
+            "secret": "sim-secret-42",
             "localIp": "192.168.1.55",
             "port": 4040
         }
@@ -42,7 +43,8 @@ async def simulate_android():
         query_msg = {
             "action": "query",
             "role": "android",
-            "pairingId": PAIRING_ID
+            "pairingId": PAIRING_ID,
+            "secret": "sim-secret-42"
         }
         await ws.send(json.dumps(query_msg))
         
@@ -53,7 +55,8 @@ async def simulate_android():
         relay_req = {
             "action": "request_relay",
             "role": "android",
-            "pairingId": PAIRING_ID
+            "pairingId": PAIRING_ID,
+            "secret": "sim-secret-42"
         }
         logging.info("[ANDROID] Requesting Relay Tunnel...")
         await ws.send(json.dumps(relay_req))

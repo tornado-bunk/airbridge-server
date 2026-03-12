@@ -53,6 +53,13 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate that the client declared a known Role
+	if baseMsg.Role != models.RoleMac && baseMsg.Role != models.RoleAndroid {
+		slog.Warn("Connection rejected: Unknown or missing role", "role", baseMsg.Role)
+		conn.Close()
+		return
+	}
+
 	session := hub.GetOrCreateSession(baseMsg.PairingID, baseMsg.Secret)
 
 	client := &models.Client{
@@ -196,6 +203,12 @@ func handleRelayMessage(session *models.Session, sender *models.Client, message 
 	session.RUnlock()
 
 	if target != nil {
+		// Recover from panic if Send channel was closed (client replaced mid-flight)
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Warn("Recovered from send on closed channel", "pairing_id", session.PairingID, "sender", sender.Role)
+			}
+		}()
 		select {
 		case target.Send <- message:
 		default:
