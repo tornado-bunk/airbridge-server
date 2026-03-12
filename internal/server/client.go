@@ -25,6 +25,7 @@ const (
 // ReadPump pumps messages from the websocket connection to the hub.
 func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandler func(*models.Client, *models.Session, int, []byte)) {
 	defer func() {
+		close(c.Done) // Signal WritePump to exit immediately and prevent goroutine leak
 		session.DetachClient(c)
 		c.Conn.Close()
 		slog.Info("ReadPump closed, client detached", "client_role", c.Role, "pairing_id", c.PairingID)
@@ -62,6 +63,8 @@ func WritePump(c *models.Client) {
 
 	for {
 		select {
+		case <-c.Done:
+			return // Expected exit triggered by ReadPump closing
 		case message, ok := <-c.Send:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {

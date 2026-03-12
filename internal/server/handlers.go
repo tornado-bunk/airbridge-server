@@ -71,6 +71,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		Conn:      conn,
 		// Buffer set to 2048 to prevent blocking the sender when relaying large binary files
 		Send: make(chan models.Envelope, 2048),
+		Done: make(chan struct{}),
 	}
 
 	if !session.AttachClient(client, baseMsg.Secret) {
@@ -219,8 +220,9 @@ func handleRelayMessage(session *models.Session, sender *models.Client, env mode
 	if target != nil {
 		select {
 		case target.Send <- env:
-		default:
-			slog.Warn("Send buffer full, dropping relay message", "pairing_id", session.PairingID, "sender", sender.Role)
+		case <-time.After(10 * time.Second): // Timeout for TCP backpressure
+			slog.Warn("Target too slow or blocked, closing tunnel to apply backpressure", "pairing_id", session.PairingID, "sender", sender.Role)
+			target.Conn.Close()
 		}
 	}
 }

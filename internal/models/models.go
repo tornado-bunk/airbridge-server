@@ -29,6 +29,7 @@ type Client struct {
 	Conn      *websocket.Conn
 	PairingID string
 	Send      chan Envelope // Buffered channel for outbound messages
+	Done      chan struct{} // Channel to signal WritePump to exit
 }
 
 // Session represents an active pairing between a Mac and an Android device
@@ -64,28 +65,34 @@ func NewSession(pairingID string, secret string) *Session {
 // Returns a boolean indicating whether the attachment was successful (secret matches).
 func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 	s.Lock()
-	defer s.Unlock()
 
 	// If the session was already created, the incoming client MUST match the initial secret
 	if s.Secret != "" && s.Secret != providedSecret {
+		s.Unlock()
 		slog.Warn("Client attempted to join session with invalid secret", "pairing_id", s.PairingID, "role", c.Role)
 		return false
 	}
 
+	var oldClient *Client
 	if c.Role == RoleMac {
 		if s.Mac != nil {
-			slog.Info("Replacing existing Mac client in session", "pairing_id", s.PairingID)
-			s.Mac.Conn.Close()
+			oldClient = s.Mac
 		}
 		s.Mac = c
 	} else if c.Role == RoleAndroid {
 		if s.Android != nil {
-			slog.Info("Replacing existing Android client in session", "pairing_id", s.PairingID)
-			s.Android.Conn.Close()
+			oldClient = s.Android
 		}
 		s.Android = c
 	}
 	s.UpdatedAt = time.Now()
+	s.Unlock()
+
+	// Perform I/O outside of the lock
+	if oldClient != nil {
+		slog.Info("Replacing existing client in session", "pairing_id", s.PairingID, "role", oldClient.Role)
+		oldClient.Conn.Close()
+	}
 	return true
 }
 
