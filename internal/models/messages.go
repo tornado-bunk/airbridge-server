@@ -18,7 +18,8 @@ const (
 type BaseMessage struct {
 	Action    ActionType `json:"action"`
 	PairingID string     `json:"pairingId"`
-	Role      Role       `json:"role,omitempty"` // "mac" or "android" (optional for some actions)
+	Secret    string     `json:"secret,omitempty"` // Used to authenticate the connection
+	Role      Role       `json:"role,omitempty"`   // "mac" or "android" (optional for some actions)
 }
 
 // RegisterMessage represents the payload sent by the Mac to register its connection

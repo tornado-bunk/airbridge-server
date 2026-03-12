@@ -25,7 +25,7 @@ func NewHub() *Hub {
 }
 
 // GetOrCreateSession retrieves an existing session from the hub or creates a new one
-func (h *Hub) GetOrCreateSession(pairingID string) *models.Session {
+func (h *Hub) GetOrCreateSession(pairingID string, secret string) *models.Session {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -34,7 +34,7 @@ func (h *Hub) GetOrCreateSession(pairingID string) *models.Session {
 	}
 
 	slog.Info("Creating new session", "pairing_id", pairingID)
-	newSession := models.NewSession(pairingID)
+	newSession := models.NewSession(pairingID, secret)
 	h.sessions[pairingID] = newSession
 	return newSession
 }

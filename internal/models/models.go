@@ -28,6 +28,7 @@ type Client struct {
 // Session represents an active pairing between a Mac and an Android device
 type Session struct {
 	PairingID string
+	Secret    string // The authentication secret establishing this session
 
 	Mac     *Client
 	Android *Client
@@ -44,18 +45,26 @@ type Session struct {
 }
 
 // NewSession creates and returns a new session
-func NewSession(pairingID string) *Session {
+func NewSession(pairingID string, secret string) *Session {
 	return &Session{
 		PairingID: pairingID,
+		Secret:    secret,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 }
 
 // AttachClient safely attaches a client to the appropriate role in the session
-func (s *Session) AttachClient(c *Client) {
+// Returns a boolean indicating whether the attachment was successful (secret matches).
+func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 	s.Lock()
 	defer s.Unlock()
+
+	// If the session was already created, the incoming client MUST match the initial secret
+	if s.Secret != "" && s.Secret != providedSecret {
+		slog.Warn("Client attempted to join session with invalid secret", "pairing_id", s.PairingID, "role", c.Role)
+		return false
+	}
 
 	if c.Role == RoleMac {
 		if s.Mac != nil {
@@ -71,6 +80,7 @@ func (s *Session) AttachClient(c *Client) {
 		s.Android = c
 	}
 	s.UpdatedAt = time.Now()
+	return true
 }
 
 // DetachClient safely removes a client from the session if it matches the current one

@@ -56,6 +56,7 @@ func TestMacRegistrationAndAndroidQuery(t *testing.T) {
 			Action:    models.ActionRegister,
 			Role:      models.RoleMac,
 			PairingID: pairingID,
+			Secret:    "super-secret-123",
 		},
 		LocalIP: "192.168.1.100",
 		Port:    8080,
@@ -85,6 +86,7 @@ func TestMacRegistrationAndAndroidQuery(t *testing.T) {
 			Action:    models.ActionQuery,
 			Role:      models.RoleAndroid,
 			PairingID: pairingID,
+			Secret:    "super-secret-123",
 		},
 	}
 
@@ -109,6 +111,25 @@ func TestMacRegistrationAndAndroidQuery(t *testing.T) {
 	if macInfoResp.LocalIP != "192.168.1.100" || macInfoResp.Port != 8080 {
 		t.Errorf("Received incorrect Mac Info: %s:%d", macInfoResp.LocalIP, macInfoResp.Port)
 	}
+
+	// 3. Negative validation: Connect Hacker Android with bad secret
+	hackerQueryMsg := models.QueryMessage{
+		BaseMessage: models.BaseMessage{
+			Action:    models.ActionQuery,
+			Role:      models.RoleAndroid,
+			PairingID: pairingID,
+			Secret:    "bad-password",
+		},
+	}
+	hackerConn := connectWS(t, s.URL, hackerQueryMsg)
+	defer hackerConn.Close()
+
+	// Hacker should immediately be disconnected by the server (Read returns error)
+	hackerConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	_, _, err = hackerConn.ReadMessage()
+	if err == nil {
+		t.Fatalf("Expected Hacker connection to be closed by server due to invalid secret, but read succeeded")
+	}
 }
 
 func TestRelayTunneling(t *testing.T) {
@@ -123,6 +144,7 @@ func TestRelayTunneling(t *testing.T) {
 			Action:    models.ActionRegister,
 			Role:      models.RoleMac,
 			PairingID: pairingID,
+			Secret:    "tunnel-secret",
 		},
 		LocalIP: "10.0.0.5",
 	})
@@ -134,6 +156,7 @@ func TestRelayTunneling(t *testing.T) {
 			Action:    models.ActionQuery,
 			Role:      models.RoleAndroid,
 			PairingID: pairingID,
+			Secret:    "tunnel-secret",
 		},
 	})
 	defer androidConn.Close()
@@ -146,6 +169,7 @@ func TestRelayTunneling(t *testing.T) {
 		Action:    models.ActionRequestRelay,
 		Role:      models.RoleAndroid,
 		PairingID: pairingID,
+		Secret:    "tunnel-secret",
 	}
 	b, _ := json.Marshal(reqRelayMsg)
 	androidConn.WriteMessage(websocket.TextMessage, b)

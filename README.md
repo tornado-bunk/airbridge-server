@@ -13,7 +13,7 @@ A standalone Signaling and E2EE Relay server built in Go for the AirSync project
 - Maintains in-memory sessions using thread-safe maps (`sync.RWMutex`).
 - Features **Heartbeat Monitoring** to automatically prune dead connections.
 
-## Security & Deployment (Production vs Local)
+## Security & Deployment
 
 This server is designed to be easily self-hostable. 
 

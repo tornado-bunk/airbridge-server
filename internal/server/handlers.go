@@ -53,7 +53,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := hub.GetOrCreateSession(baseMsg.PairingID)
+	session := hub.GetOrCreateSession(baseMsg.PairingID, baseMsg.Secret)
 
 	client := &models.Client{
 		ID:        string(baseMsg.Role) + "-" + baseMsg.PairingID, // e.g. "mac-abc"
@@ -64,7 +64,11 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		Send: make(chan []byte, 2048),
 	}
 
-	session.AttachClient(client)
+	if !session.AttachClient(client, baseMsg.Secret) {
+		slog.Warn("Connection rejected: Invalid secret", "role", baseMsg.Role, "pairing_id", baseMsg.PairingID)
+		conn.Close()
+		return
+	}
 
 	// Handle the initial message immediately
 	handleMessage(hub, client, session, initialMsgBytes)
