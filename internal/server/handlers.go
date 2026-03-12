@@ -222,7 +222,13 @@ func handleRelayMessage(session *models.Session, sender *models.Client, env mode
 		// Raw backpressure. If target reader is slow, target.Send blocks.
 		// Sender's ReadPump will block, filling Sender's TCP buffer.
 		// This forces the Sender client (Mac/Android) to physically slow down.
-		// No ephemeral memory allocations (like time.After) are created here.
-		target.Send <- env
+		// No ephemeral memory allocations are created here.
+		select {
+		case target.Send <- env:
+		case <-target.Done:
+			// Target disconnected. Unblock sender immediately to prevent goroutine deadlock.
+			slog.Warn("Target disconnected during relay, dropping packet", "pairing_id", session.PairingID)
+			return
+		}
 	}
 }
