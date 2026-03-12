@@ -11,8 +11,8 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	ReadBufferSize:  4096 * 8, // 32KB for high-throughput binary relays
+	WriteBufferSize: 4096 * 8, // 32KB for high-throughput binary relays
 	// Allowing all origins for simple self-hosted usage.
 	// NOTE: In a strictly public production environment, this should be restricted
 	// to known origins or domains!
@@ -94,16 +94,17 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 func handleMessage(hub *Hub, client *models.Client, session *models.Session, messageType int, message []byte) {
 	slog.Debug("Received message", "role", client.Role, "len", len(message))
 
-	// Refresh the session timeout so the Heartbeat monitor knows it's active
-	session.Lock()
-	session.UpdatedAt = time.Now()
-	session.Unlock()
-
 	// If it's a binary payload (e.g., encrypted file relay), route it directly without parsing
+	// Fast path: no locks, no JSON parsing
 	if messageType == websocket.BinaryMessage {
 		handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
 		return
 	}
+
+	// Refresh the session timeout so the Heartbeat monitor knows it's active
+	session.Lock()
+	session.UpdatedAt = time.Now()
+	session.Unlock()
 
 	// Try parsing it as JSON to see if it's a control message
 	baseMsg, err := models.ParseIncomingMessage(message)
@@ -218,11 +219,10 @@ func handleRelayMessage(session *models.Session, sender *models.Client, env mode
 	session.RUnlock()
 
 	if target != nil {
-		select {
-		case target.Send <- env:
-		case <-time.After(10 * time.Second): // Timeout for TCP backpressure
-			slog.Warn("Target too slow or blocked, closing tunnel to apply backpressure", "pairing_id", session.PairingID, "sender", sender.Role)
-			target.Conn.Close()
-		}
+		// Raw backpressure. If target reader is slow, target.Send blocks.
+		// Sender's ReadPump will block, filling Sender's TCP buffer.
+		// This forces the Sender client (Mac/Android) to physically slow down.
+		// No ephemeral memory allocations (like time.After) are created here.
+		target.Send <- env
 	}
 }
