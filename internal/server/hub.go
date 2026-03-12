@@ -58,10 +58,12 @@ func (h *Hub) RemoveSession(pairingID string) {
 
 // CleanupStaleSessions Periodically called to remove sessions that have been abandoned
 func (h *Hub) CleanupStaleSessions(maxIdleTime time.Duration) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	now := time.Now()
+
+	// Step 1: Collect IDs to delete using a short Read Lock
+	var staleIDs []string
+
+	h.mu.RLock()
 	for id, session := range h.sessions {
 		session.RLock()
 		updatedAt := session.UpdatedAt
@@ -69,10 +71,30 @@ func (h *Hub) CleanupStaleSessions(maxIdleTime time.Duration) {
 		androidPresent := session.Android != nil
 		session.RUnlock()
 
-		// If the session has been empty (no clients) for too long, remove it
+		// If the session has been empty (no clients) for too long, mark it to remove
 		if !macPresent && !androidPresent && now.Sub(updatedAt) > maxIdleTime {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	h.mu.RUnlock()
+
+	// Step 2: Delete collected IDs using a short Write Lock
+	if len(staleIDs) > 0 {
+		h.mu.Lock()
+		for _, id := range staleIDs {
 			slog.Debug("Cleaning up stale session", "pairing_id", id)
 			delete(h.sessions, id)
 		}
+		h.mu.Unlock()
 	}
+}
+
+// RunHeartbeat starts a background ticker to clean up dead sessions automatically
+func (h *Hub) RunHeartbeat(interval time.Duration, maxIdleTime time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			h.CleanupStaleSessions(maxIdleTime)
+		}
+	}()
 }

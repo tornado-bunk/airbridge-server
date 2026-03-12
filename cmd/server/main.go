@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/tornado-bunk/airbridge-server/internal/server"
 )
@@ -22,6 +23,10 @@ func main() {
 	slog.Info("Starting Sync Relay Server", "addr", *addr)
 
 	hub := server.NewHub()
+
+	// Start heartbeat monitor to clean up abandoned sessions
+	// Checks every 1 minute if a session has been empty for more than 5 minutes
+	hub.RunHeartbeat(1*time.Minute, 5*time.Minute)
 
 	// Handle standard health check
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

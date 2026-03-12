@@ -12,7 +12,9 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	// Allowing all origins for simple self-hosted usage
+	// Allowing all origins for simple self-hosted usage.
+	// NOTE: In a strictly public production environment, this should be restricted
+	// to known origins or domains!
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
@@ -51,7 +53,8 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		Role:      baseMsg.Role,
 		PairingID: baseMsg.PairingID,
 		Conn:      conn,
-		Send:      make(chan []byte, 256),
+		// Buffer set to 2048 to prevent blocking the sender when relaying large binary files
+		Send: make(chan []byte, 2048),
 	}
 
 	session.AttachClient(client)
