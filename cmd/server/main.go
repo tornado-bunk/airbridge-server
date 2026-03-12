@@ -39,21 +39,23 @@ func main() {
 	// Checks every 1 minute if a session has been empty for more than 5 minutes
 	hub.RunHeartbeat(1*time.Minute, 5*time.Minute)
 
+	mux := http.NewServeMux()
+
 	// Handle standard health check
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Sync Relay Server is running"))
 	})
 
 	// Handle WebSocket endpoint
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		server.ServeWs(hub, w, r)
 	})
 
 	// 2. Setup HTTP Server
 	srv := &http.Server{
 		Addr:    listenAddr,
-		Handler: nil, // uses DefaultServeMux from http.HandleFunc
+		Handler: mux, // isolated multiplexer avoids DefaultServeMux leaks
 	}
 
 	slog.Info("Starting Sync Relay Server", "addr", listenAddr)

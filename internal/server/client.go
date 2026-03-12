@@ -23,7 +23,7 @@ const (
 )
 
 // ReadPump pumps messages from the websocket connection to the hub.
-func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandler func(*models.Client, *models.Session, []byte)) {
+func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandler func(*models.Client, *models.Session, int, []byte)) {
 	defer func() {
 		session.DetachClient(c)
 		c.Conn.Close()
@@ -38,7 +38,7 @@ func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandle
 	})
 
 	for {
-		_, message, err := c.Conn.ReadMessage()
+		messageType, message, err := c.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Error("Unexpected websocket close error", "error", err)
@@ -47,7 +47,7 @@ func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandle
 		}
 
 		// Delegate message handling to the router
-		messageHandler(c, session, message)
+		messageHandler(c, session, messageType, message)
 	}
 }
 
@@ -71,11 +71,11 @@ func WritePump(c *models.Client) {
 				return
 			}
 
-			w, err := c.Conn.NextWriter(websocket.TextMessage)
+			w, err := c.Conn.NextWriter(message.Type)
 			if err != nil {
 				return
 			}
-			w.Write(message)
+			w.Write(message.Data)
 
 			if err := w.Close(); err != nil {
 				return

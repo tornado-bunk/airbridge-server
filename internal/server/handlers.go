@@ -68,7 +68,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		PairingID: baseMsg.PairingID,
 		Conn:      conn,
 		// Buffer set to 2048 to prevent blocking the sender when relaying large binary files
-		Send: make(chan []byte, 2048),
+		Send: make(chan models.Envelope, 2048),
 	}
 
 	if !session.AttachClient(client, baseMsg.Secret) {
@@ -77,18 +77,18 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle the initial message immediately
-	handleMessage(hub, client, session, initialMsgBytes)
+	// Handle the initial message immediately (it's always JSON/Text)
+	handleMessage(hub, client, session, websocket.TextMessage, initialMsgBytes)
 
 	// Start Go routines for reading and writing pumps
 	go WritePump(client)
-	go ReadPump(client, hub, session, func(c *models.Client, s *models.Session, msg []byte) {
-		handleMessage(hub, c, s, msg)
+	go ReadPump(client, hub, session, func(c *models.Client, s *models.Session, msgType int, msg []byte) {
+		handleMessage(hub, c, s, msgType, msg)
 	})
 }
 
 // handleMessage routes messages depending on their parsed action
-func handleMessage(hub *Hub, client *models.Client, session *models.Session, message []byte) {
+func handleMessage(hub *Hub, client *models.Client, session *models.Session, messageType int, message []byte) {
 	slog.Debug("Received message", "role", client.Role, "len", len(message))
 
 	// Refresh the session timeout so the Heartbeat monitor knows it's active
@@ -100,7 +100,7 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 	baseMsg, err := models.ParseIncomingMessage(message)
 	if err != nil {
 		// If it's not JSON, it could be a raw binary relay stream
-		handleRelayMessage(session, client, message)
+		handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
 		return
 	}
 
@@ -129,7 +129,7 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 			}
 			b, _ := json.Marshal(resp)
 			select {
-			case client.Send <- b:
+			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
 				slog.Info("Android Queried. Sent Mac Info", "pairing_id", session.PairingID)
 			default:
 				slog.Warn("Send buffer full, dropping mac_info response", "pairing_id", session.PairingID)
@@ -141,7 +141,7 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 			}
 			b, _ := json.Marshal(resp)
 			select {
-			case client.Send <- b:
+			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
 			default:
 				slog.Warn("Send buffer full, dropping error response", "pairing_id", session.PairingID)
 			}
@@ -161,13 +161,15 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 			android := session.Android
 			session.RUnlock()
 
+			env := models.Envelope{Type: websocket.TextMessage, Data: b}
+
 			select {
-			case mac.Send <- b:
+			case mac.Send <- env:
 			default:
 				slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", session.PairingID)
 			}
 			select {
-			case android.Send <- b:
+			case android.Send <- env:
 			default:
 				slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", session.PairingID)
 			}
@@ -179,7 +181,7 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 			}
 			b, _ := json.Marshal(resp)
 			select {
-			case client.Send <- b:
+			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
 			default:
 				slog.Warn("Send buffer full, dropping relay error", "pairing_id", session.PairingID)
 			}
@@ -187,12 +189,12 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 
 	default:
 		// Unknown action, probably an encrypted payload looking like a json text frame
-		handleRelayMessage(session, client, message)
+		handleRelayMessage(session, client, models.Envelope{Type: websocket.TextMessage, Data: message})
 	}
 }
 
 // handleRelayMessage blindly routes the `message` from the current client to its peer (Android -> Mac, Mac -> Android)
-func handleRelayMessage(session *models.Session, sender *models.Client, message []byte) {
+func handleRelayMessage(session *models.Session, sender *models.Client, env models.Envelope) {
 	session.RLock()
 	var target *models.Client
 	if sender.Role == models.RoleAndroid {
@@ -210,7 +212,7 @@ func handleRelayMessage(session *models.Session, sender *models.Client, message 
 			}
 		}()
 		select {
-		case target.Send <- message:
+		case target.Send <- env:
 		default:
 			slog.Warn("Send buffer full, dropping relay message", "pairing_id", session.PairingID, "sender", sender.Role)
 		}

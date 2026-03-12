@@ -16,13 +16,19 @@ const (
 	RoleAndroid Role = "android"
 )
 
+// Envelope carries both the payload and the websocket message type
+type Envelope struct {
+	Type int
+	Data []byte
+}
+
 // Client represents a single connected WebSocket device
 type Client struct {
 	ID        string
 	Role      Role
 	Conn      *websocket.Conn
 	PairingID string
-	Send      chan []byte // Buffered channel for outbound messages
+	Send      chan Envelope // Buffered channel for outbound messages
 }
 
 // Session represents an active pairing between a Mac and an Android device
@@ -69,14 +75,12 @@ func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 	if c.Role == RoleMac {
 		if s.Mac != nil {
 			slog.Info("Replacing existing Mac client in session", "pairing_id", s.PairingID)
-			close(s.Mac.Send) // Signal old WritePump to exit immediately
 			s.Mac.Conn.Close()
 		}
 		s.Mac = c
 	} else if c.Role == RoleAndroid {
 		if s.Android != nil {
 			slog.Info("Replacing existing Android client in session", "pairing_id", s.PairingID)
-			close(s.Android.Send) // Signal old WritePump to exit immediately
 			s.Android.Conn.Close()
 		}
 		s.Android = c
