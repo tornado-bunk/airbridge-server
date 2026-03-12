@@ -77,12 +77,6 @@ func WritePump(c *models.Client) {
 			}
 			w.Write(message)
 
-			// Add queued messages to the current websocket message to avoid multiple frames if possible
-			n := len(c.Send)
-			for i := 0; i < n; i++ {
-				w.Write(<-c.Send)
-			}
-
 			if err := w.Close(); err != nil {
 				return
 			}

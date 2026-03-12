@@ -32,6 +32,9 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	// We don't know the exact Role/PairingID yet until the first message.
 	// We create a temporary client just to listen to the first message.
 
+	// Require the first packet within 10 seconds to prevent Phantom Client attacks (DoS)
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
 	// Read first message (handshake/registration)
 	_, initialMsgBytes, err := conn.ReadMessage()
 	if err != nil {
@@ -39,6 +42,9 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
+
+	// Remove the temporary handshake deadline
+	conn.SetReadDeadline(time.Time{})
 
 	baseMsg, err := models.ParseIncomingMessage(initialMsgBytes)
 	if err != nil || baseMsg.PairingID == "" {
