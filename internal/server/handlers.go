@@ -121,15 +121,23 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 				Port:    port,
 			}
 			b, _ := json.Marshal(resp)
-			client.Send <- b
-			slog.Info("Android Queried. Sent Mac Info", "pairing_id", session.PairingID)
+			select {
+			case client.Send <- b:
+				slog.Info("Android Queried. Sent Mac Info", "pairing_id", session.PairingID)
+			default:
+				slog.Warn("Send buffer full, dropping mac_info response", "pairing_id", session.PairingID)
+			}
 		} else {
 			resp := models.ErrorMessage{
 				Action:  models.ActionError,
 				Message: "Mac not registered yet or IP unknown",
 			}
 			b, _ := json.Marshal(resp)
-			client.Send <- b
+			select {
+			case client.Send <- b:
+			default:
+				slog.Warn("Send buffer full, dropping error response", "pairing_id", session.PairingID)
+			}
 			slog.Warn("Android Queried but Mac unknown", "pairing_id", session.PairingID)
 		}
 
@@ -140,11 +148,22 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 				PairingID: session.PairingID,
 			}
 			b, _ := json.Marshal(resp)
-			// notify both
+			// notify both (non-blocking to avoid deadlock under RLock)
 			session.RLock()
-			session.Mac.Send <- b
-			session.Android.Send <- b
+			mac := session.Mac
+			android := session.Android
 			session.RUnlock()
+
+			select {
+			case mac.Send <- b:
+			default:
+				slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", session.PairingID)
+			}
+			select {
+			case android.Send <- b:
+			default:
+				slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", session.PairingID)
+			}
 			slog.Info("Relay Tunnel Established", "pairing_id", session.PairingID)
 		} else {
 			resp := models.ErrorMessage{
@@ -152,7 +171,11 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 				Message: "Cannot start relay, missing peer",
 			}
 			b, _ := json.Marshal(resp)
-			client.Send <- b
+			select {
+			case client.Send <- b:
+			default:
+				slog.Warn("Send buffer full, dropping relay error", "pairing_id", session.PairingID)
+			}
 		}
 
 	default:
@@ -164,11 +187,19 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 // handleRelayMessage blindly routes the `message` from the current client to its peer (Android -> Mac, Mac -> Android)
 func handleRelayMessage(session *models.Session, sender *models.Client, message []byte) {
 	session.RLock()
-	defer session.RUnlock()
+	var target *models.Client
+	if sender.Role == models.RoleAndroid {
+		target = session.Mac
+	} else if sender.Role == models.RoleMac {
+		target = session.Android
+	}
+	session.RUnlock()
 
-	if sender.Role == models.RoleAndroid && session.Mac != nil {
-		session.Mac.Send <- message
-	} else if sender.Role == models.RoleMac && session.Android != nil {
-		session.Android.Send <- message
+	if target != nil {
+		select {
+		case target.Send <- message:
+		default:
+			slog.Warn("Send buffer full, dropping relay message", "pairing_id", session.PairingID, "sender", sender.Role)
+		}
 	}
 }

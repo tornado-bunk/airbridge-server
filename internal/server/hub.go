@@ -79,11 +79,23 @@ func (h *Hub) CleanupStaleSessions(maxIdleTime time.Duration) {
 	h.mu.RUnlock()
 
 	// Step 2: Delete collected IDs using a short Write Lock
+	// Re-verify each session is still empty to avoid a TOCTOU race
 	if len(staleIDs) > 0 {
 		h.mu.Lock()
 		for _, id := range staleIDs {
-			slog.Debug("Cleaning up stale session", "pairing_id", id)
-			delete(h.sessions, id)
+			session := h.sessions[id]
+			if session == nil {
+				continue
+			}
+			session.RLock()
+			stillEmpty := session.Mac == nil && session.Android == nil
+			session.RUnlock()
+			if stillEmpty {
+				slog.Debug("Cleaning up stale session", "pairing_id", id)
+				delete(h.sessions, id)
+			} else {
+				slog.Debug("Session revived before cleanup, skipping", "pairing_id", id)
+			}
 		}
 		h.mu.Unlock()
 	}

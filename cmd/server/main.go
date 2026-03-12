@@ -33,8 +33,6 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	slog.Info("Starting Sync Relay Server", "addr", *addr)
-
 	hub := server.NewHub()
 
 	// Start heartbeat monitor to clean up abandoned sessions

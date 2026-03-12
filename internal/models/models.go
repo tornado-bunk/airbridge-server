@@ -69,12 +69,14 @@ func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 	if c.Role == RoleMac {
 		if s.Mac != nil {
 			slog.Info("Replacing existing Mac client in session", "pairing_id", s.PairingID)
+			close(s.Mac.Send) // Signal old WritePump to exit immediately
 			s.Mac.Conn.Close()
 		}
 		s.Mac = c
 	} else if c.Role == RoleAndroid {
 		if s.Android != nil {
 			slog.Info("Replacing existing Android client in session", "pairing_id", s.PairingID)
+			close(s.Android.Send) // Signal old WritePump to exit immediately
 			s.Android.Conn.Close()
 		}
 		s.Android = c
