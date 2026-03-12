@@ -96,11 +96,16 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 	session.UpdatedAt = time.Now()
 	session.Unlock()
 
+	// If it's a binary payload (e.g., encrypted file relay), route it directly without parsing
+	if messageType == websocket.BinaryMessage {
+		handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
+		return
+	}
+
 	// Try parsing it as JSON to see if it's a control message
 	baseMsg, err := models.ParseIncomingMessage(message)
 	if err != nil {
-		// If it's not JSON, it could be a raw binary relay stream
-		handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
+		slog.Warn("Failed to parse incoming text message", "error", err)
 		return
 	}
 
@@ -163,15 +168,20 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 
 			env := models.Envelope{Type: websocket.TextMessage, Data: b}
 
-			select {
-			case mac.Send <- env:
-			default:
-				slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", session.PairingID)
+			if mac != nil {
+				select {
+				case mac.Send <- env:
+				default:
+					slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", session.PairingID)
+				}
 			}
-			select {
-			case android.Send <- env:
-			default:
-				slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", session.PairingID)
+
+			if android != nil {
+				select {
+				case android.Send <- env:
+				default:
+					slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", session.PairingID)
+				}
 			}
 			slog.Info("Relay Tunnel Established", "pairing_id", session.PairingID)
 		} else {
