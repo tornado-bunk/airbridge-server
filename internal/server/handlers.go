@@ -34,6 +34,8 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Require the first packet within 10 seconds to prevent Phantom Client attacks (DoS)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// Prevent an OOM attack where the client sends a multi-gigabyte text frame as the handshake
+	conn.SetReadLimit(64 * 1024)
 
 	// Read first message (handshake/registration)
 	_, initialMsgBytes, err := conn.ReadMessage()
@@ -198,8 +200,8 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 		}
 
 	default:
-		// Unknown action, probably an encrypted payload looking like a json text frame
-		handleRelayMessage(session, client, models.Envelope{Type: websocket.TextMessage, Data: message})
+		// If it reaches here, it's a valid JSON but with an unknown/unsupported Action.
+		slog.Warn("Unknown or unsupported action, dropping message", "action", baseMsg.Action, "pairing_id", session.PairingID)
 	}
 }
 
@@ -215,12 +217,6 @@ func handleRelayMessage(session *models.Session, sender *models.Client, env mode
 	session.RUnlock()
 
 	if target != nil {
-		// Recover from panic if Send channel was closed (client replaced mid-flight)
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Warn("Recovered from send on closed channel", "pairing_id", session.PairingID, "sender", sender.Role)
-			}
-		}()
 		select {
 		case target.Send <- env:
 		default:
