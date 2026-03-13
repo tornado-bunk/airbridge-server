@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,7 +18,7 @@ func main() {
 	var addr = flag.String("addr", "", "http service address (overrides PORT env)")
 	flag.Parse()
 
-	// 1. Determine Port (Env Var fallback)
+	// Get Port from env variable or default to 8080 if not set
 	listenAddr := *addr
 	if listenAddr == "" {
 		port := os.Getenv("PORT")
@@ -27,12 +28,23 @@ func main() {
 		listenAddr = ":" + port
 	}
 
-	// Initialize structured logger
+	// Initialize structured logger with configurable level via LOG_LEVEL env var.
+	// Defaults to INFO in production. Set LOG_LEVEL=DEBUG for verbose output.
+	logLevel := slog.LevelInfo
+	switch strings.ToUpper(os.Getenv("LOG_LEVEL")) {
+	case "DEBUG":
+		logLevel = slog.LevelDebug
+	case "WARN":
+		logLevel = slog.LevelWarn
+	case "ERROR":
+		logLevel = slog.LevelError
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
 
+	// Initialize the Hub which manages all WebSocket sessions and message routing
 	hub := server.NewHub()
 
 	// Start heartbeat monitor to clean up abandoned sessions
@@ -52,7 +64,7 @@ func main() {
 		server.ServeWs(hub, w, r)
 	})
 
-	// 2. Setup HTTP Server
+	// Setup HTTP Server
 	srv := &http.Server{
 		Addr:    listenAddr,
 		Handler: mux, // isolated multiplexer avoids DefaultServeMux leaks
@@ -60,7 +72,7 @@ func main() {
 
 	slog.Info("Starting Sync Relay Server", "addr", listenAddr)
 
-	// 3. Start server in a goroutine so it doesn't block
+	// Start server in a goroutine so it doesn't block
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server failed to start", "error", err)
@@ -68,11 +80,10 @@ func main() {
 		}
 	}()
 
-	// 4. Graceful Shutdown (Wait for interrupt signal)
+	// Graceful Shutdown (Wait for interrupt signal)
 	quit := make(chan os.Signal, 1)
 	// kill (no param) default os.Interrupt
-	// kill -9 is syscall.SIGKILL but can't be caught, so don't need add it
-	// kill -2 is syscall.SIGINT
+	// kill -9 is syscall.SIGKILL
 	// kill -15 is syscall.SIGTERM
 	signal.Notify(quit, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
@@ -84,7 +95,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 5. Close the server (this stops accepting new connections and closes idle ones,
+	// Close the server (this stops accepting new connections and closes idle ones,
 	// active websockets will be closed by the Read pumps when the TCP socket drops)
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("Server forced to shutdown", "error", err)

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -40,22 +41,25 @@ var upgrader = websocket.Upgrader{
 }
 
 // realClientIP extracts the true client IP from the request.
-// It checks Cloudflare's CF-Connecting-IP header first, then X-Forwarded-For,
-// and falls back to r.RemoteAddr. This ensures the rate limiter works correctly
-// when the server is behind Cloudflare or another reverse proxy.
+// When TRUST_PROXY=true, it reads X-Forwarded-For (set by any standard
+// reverse proxy like Nginx, NPM, Traefik, Caddy, etc.).
+// Otherwise it uses the direct TCP RemoteAddr.
 func realClientIP(r *http.Request) string {
-	// Cloudflare sets this to the actual client IP
-	if cfIP := r.Header.Get("CF-Connecting-IP"); cfIP != "" {
-		return cfIP
-	}
-	// Standard reverse-proxy header (first entry is the original client)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		if ip := strings.TrimSpace(parts[0]); ip != "" {
-			return ip
+	if strings.EqualFold(os.Getenv("TRUST_PROXY"), "true") {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.SplitN(xff, ",", 2)
+			if ip := strings.TrimSpace(parts[0]); ip != "" {
+				return ip
+			}
 		}
 	}
-	return r.RemoteAddr
+
+	// Direct connection or no proxy header — use TCP peer address
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // ServeWs handles websocket requests from the peer.
@@ -111,7 +115,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Check if this pairing ID is locked out due to too many failed auth attempts
 	if !hub.RateLimiter.AllowAuth(baseMsg.PairingID) {
-		slog.Warn("Connection rejected: pairing ID locked out", "pairing_id", baseMsg.PairingID)
+		slog.Warn("Connection rejected: pairing ID locked out", "pairing_id", models.TruncateID(baseMsg.PairingID))
 		conn.Close()
 		return
 	}
@@ -130,7 +134,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	if !session.AttachClient(client, baseMsg.Secret) {
 		hub.RateLimiter.RecordAuthFailure(baseMsg.PairingID)
-		slog.Warn("Connection rejected: Invalid secret", "role", baseMsg.Role, "pairing_id", baseMsg.PairingID)
+		slog.Warn("Connection rejected: Invalid secret", "role", baseMsg.Role, "pairing_id", models.TruncateID(baseMsg.PairingID))
 		conn.Close()
 		return
 	}
@@ -178,148 +182,45 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 
 	switch baseMsg.Action {
 	case models.ActionRegister:
-		var regMsg models.RegisterMessage
-		if err := json.Unmarshal(message, &regMsg); err == nil {
-			if client.Role == models.RoleMac {
-				slog.Info("Mac Registered", "pairing_id", session.PairingID, "ip", regMsg.LocalIP, "port", regMsg.Port)
-				session.Lock()
-				session.MacLocalIP = regMsg.LocalIP
-				session.MacPort = regMsg.Port
-				session.Unlock()
-			} else {
-				slog.Info("Android Registered", "pairing_id", session.PairingID, "ip", regMsg.LocalIP)
-			}
+		slog.Info("Client registered", "role", client.Role, "pairing_id", models.TruncateID(session.PairingID))
 
-			// Auto-start relay when both clients are connected
-			if session.HasBothClients() {
-				resp := models.BaseMessage{
-					Action:    models.ActionRelayStarted,
-					PairingID: session.PairingID,
-				}
-				b, _ := json.Marshal(resp)
-				env := models.Envelope{Type: websocket.TextMessage, Data: b}
-
-				session.RLock()
-				mac := session.Mac
-				android := session.Android
-				session.RUnlock()
-
-				if mac != nil {
-					select {
-					case mac.Send <- env:
-					default:
-						slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", session.PairingID)
-					}
-				}
-				if android != nil {
-					select {
-					case android.Send <- env:
-					default:
-						slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", session.PairingID)
-					}
-				}
-				slog.Info("Relay auto-started (both clients connected)", "pairing_id", session.PairingID)
-			}
-		}
-
-	case models.ActionQuery:
-		// Only Android clients should query Mac info
-		if client.Role != models.RoleAndroid {
-			slog.Warn("Query rejected: only Android clients may query Mac info", "role", client.Role, "pairing_id", session.PairingID)
-			resp := models.ErrorMessage{
-				Action:  models.ActionError,
-				Message: "Only Android clients may query Mac info",
-			}
-			b, _ := json.Marshal(resp)
-			select {
-			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
-			default:
-			}
-			break
-		}
-
-		session.RLock()
-		ip := session.MacLocalIP
-		port := session.MacPort
-		session.RUnlock()
-
-		if ip != "" && port != 0 {
-			resp := models.MacInfoMessage{
-				Action:  models.ActionMacInfo,
-				LocalIP: ip,
-				Port:    port,
-			}
-			b, _ := json.Marshal(resp)
-			select {
-			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
-				slog.Info("Android Queried. Sent Mac Info", "pairing_id", session.PairingID)
-			default:
-				slog.Warn("Send buffer full, dropping mac_info response", "pairing_id", session.PairingID)
-			}
-		} else {
-			resp := models.ErrorMessage{
-				Action:  models.ActionError,
-				Message: "Mac not registered yet or IP unknown",
-			}
-			b, _ := json.Marshal(resp)
-			select {
-			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
-			default:
-				slog.Warn("Send buffer full, dropping error response", "pairing_id", session.PairingID)
-			}
-			slog.Warn("Android Queried but Mac unknown", "pairing_id", session.PairingID)
-		}
-
-	case models.ActionRequestRelay:
+		// Auto-start relay when both clients are connected
 		if session.HasBothClients() {
 			resp := models.BaseMessage{
 				Action:    models.ActionRelayStarted,
 				PairingID: session.PairingID,
 			}
 			b, _ := json.Marshal(resp)
-			// notify both (non-blocking to avoid deadlock under RLock)
+			env := models.Envelope{Type: websocket.TextMessage, Data: b}
+
 			session.RLock()
 			mac := session.Mac
 			android := session.Android
 			session.RUnlock()
 
-			env := models.Envelope{Type: websocket.TextMessage, Data: b}
-
 			if mac != nil {
 				select {
 				case mac.Send <- env:
 				default:
-					slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", session.PairingID)
+					slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", models.TruncateID(session.PairingID))
 				}
 			}
-
 			if android != nil {
 				select {
 				case android.Send <- env:
 				default:
-					slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", session.PairingID)
+					slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", models.TruncateID(session.PairingID))
 				}
 			}
-			slog.Info("Relay Tunnel Established", "pairing_id", session.PairingID)
-		} else {
-			resp := models.ErrorMessage{
-				Action:  models.ActionError,
-				Message: "Cannot start relay, missing peer",
-			}
-			b, _ := json.Marshal(resp)
-			select {
-			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
-			default:
-				slog.Warn("Send buffer full, dropping relay error", "pairing_id", session.PairingID)
-			}
+			slog.Info("Relay auto-started (both clients connected)", "pairing_id", models.TruncateID(session.PairingID))
 		}
 
 	default:
-		// If it reaches here, it might be a valid JSON payload meant for the peer
+		// Any other message (JSON or otherwise) is relayed to the peer
 		if session.HasBothClients() {
 			handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
 		} else {
-			slog.Warn("Unknown or unsupported action, dropping message (relay not active)", "action", baseMsg.Action, "pairing_id", session.PairingID)
+			slog.Warn("Dropping message (relay not active, peer not connected)", "action", baseMsg.Action, "pairing_id", models.TruncateID(session.PairingID))
 		}
 	}
 }
@@ -344,7 +245,7 @@ func handleRelayMessage(session *models.Session, sender *models.Client, env mode
 		case target.Send <- env:
 		case <-target.Done:
 			// Target disconnected. Unblock sender immediately to prevent goroutine deadlock.
-			slog.Warn("Target disconnected during relay, dropping packet", "pairing_id", session.PairingID)
+			slog.Warn("Target disconnected during relay, dropping packet", "pairing_id", models.TruncateID(session.PairingID))
 			return
 		}
 	}

@@ -41,7 +41,7 @@ func (h *Hub) GetOrCreateSession(pairingID string, secret string) *models.Sessio
 		return session
 	}
 
-	slog.Info("Creating new session", "pairing_id", pairingID)
+	slog.Info("Creating new session", "pairing_id", models.TruncateID(pairingID))
 	newSession := models.NewSession(pairingID, secret)
 	h.sessions[pairingID] = newSession
 	return newSession
@@ -60,7 +60,7 @@ func (h *Hub) RemoveSession(pairingID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	slog.Info("Removing session", "pairing_id", pairingID)
+	slog.Info("Removing session", "pairing_id", models.TruncateID(pairingID))
 	delete(h.sessions, pairingID)
 }
 
@@ -99,10 +99,10 @@ func (h *Hub) CleanupStaleSessions(maxIdleTime time.Duration) {
 			stillEmpty := session.Mac == nil && session.Android == nil
 			session.RUnlock()
 			if stillEmpty {
-				slog.Debug("Cleaning up stale session", "pairing_id", id)
+				slog.Debug("Cleaning up stale session", "pairing_id", models.TruncateID(id))
 				delete(h.sessions, id)
 			} else {
-				slog.Debug("Session revived before cleanup, skipping", "pairing_id", id)
+				slog.Debug("Session revived before cleanup, skipping", "pairing_id", models.TruncateID(id))
 			}
 		}
 		h.mu.Unlock()

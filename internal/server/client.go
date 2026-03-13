@@ -15,20 +15,20 @@ const (
 	// Time allowed to read the next pong message from the peer.
 	pongWait = 30 * time.Second
 
-	// Send pings to peer with this period. Must be less than pongWait.
+	// Send pings to peer with this period
 	pingPeriod = (pongWait * 9) / 10
 
-	// Maximum message size allowed from peer. (e.g., 64MB for large file relays)
+	// Maximum message size allowed from peer (64MB for now)
 	maxMessageSize = 1024 * 1024 * 64
 )
 
 // ReadPump pumps messages from the websocket connection to the hub.
 func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandler func(*models.Client, *models.Session, int, []byte)) {
 	defer func() {
-		c.CloseDone() // Signal WritePump to exit immediately and prevent goroutine leak
+		c.CloseDone() // Signal WritePump to exit immediately
 		session.DetachClient(c)
 		c.Conn.Close()
-		slog.Info("ReadPump closed, client detached", "client_role", c.Role, "pairing_id", c.PairingID)
+		slog.Info("ReadPump closed, client detached", "client_role", c.Role, "pairing_id", models.TruncateID(c.PairingID))
 	}()
 
 	c.Conn.SetReadLimit(maxMessageSize)
@@ -58,7 +58,7 @@ func WritePump(c *models.Client) {
 	defer func() {
 		ticker.Stop()
 		c.Conn.Close()
-		slog.Info("WritePump closed", "client_role", c.Role, "pairing_id", c.PairingID)
+		slog.Info("WritePump closed", "client_role", c.Role, "pairing_id", models.TruncateID(c.PairingID))
 	}()
 
 	for {
