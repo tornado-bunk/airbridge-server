@@ -31,6 +31,14 @@ type Client struct {
 	PairingID string
 	Send      chan Envelope // Buffered channel for outbound messages
 	Done      chan struct{} // Channel to signal WritePump to exit
+	CloseOnce sync.Once     // Ensures Done is closed at most once (prevents panic)
+}
+
+// CloseDone safely closes the Done channel exactly once.
+func (c *Client) CloseDone() {
+	c.CloseOnce.Do(func() {
+		close(c.Done)
+	})
 }
 
 // Session represents an active pairing between a Mac and an Android device
@@ -63,8 +71,9 @@ func NewSession(pairingID string, secret string) *Session {
 }
 
 // AttachClient safely attaches a client to the appropriate role in the session.
-// Returns a boolean indicating whether the attachment was successful (secret matches).
-// If the role slot is already occupied, the new connection is rejected to prevent session hijacking.
+// Returns false if the provided secret doesn't match (auth failure).
+// If the role slot is already occupied by a stale connection, the old one is
+// replaced (the new client has already proven it knows the secret).
 func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 	s.Lock()
 
@@ -76,20 +85,23 @@ func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 		return false
 	}
 
-	// Reject the connection if the role slot is already occupied (prevents session hijacking).
-	if c.Role == RoleMac && s.Mac != nil {
-		s.Unlock()
-		slog.Warn("Connection rejected: Mac slot already occupied (session hijacking prevention)", "pairing_id", s.PairingID)
-		return false
-	} else if c.Role == RoleAndroid && s.Android != nil {
-		s.Unlock()
-		slog.Warn("Connection rejected: Android slot already occupied (session hijacking prevention)", "pairing_id", s.PairingID)
-		return false
-	}
-
+	// If the role slot is already occupied, replace the old (stale) connection.
+	// The new client has already proven it knows the secret, so this is a legitimate
+	// reconnection (e.g., after a network blip), not a hijack attempt.
+	// We close the old connection gracefully to free resources.
 	if c.Role == RoleMac {
+		if old := s.Mac; old != nil && old != c {
+			slog.Info("Replacing stale Mac connection with new one", "pairing_id", s.PairingID)
+			old.CloseDone()
+			old.Conn.Close()
+		}
 		s.Mac = c
 	} else if c.Role == RoleAndroid {
+		if old := s.Android; old != nil && old != c {
+			slog.Info("Replacing stale Android connection with new one", "pairing_id", s.PairingID)
+			old.CloseDone()
+			old.Conn.Close()
+		}
 		s.Android = c
 	}
 	s.UpdatedAt = time.Now()
