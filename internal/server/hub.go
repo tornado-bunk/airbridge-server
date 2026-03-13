@@ -24,8 +24,11 @@ type Hub struct {
 func NewHub() *Hub {
 	return &Hub{
 		sessions: make(map[string]*models.Session),
-		// Allow 10 connections per IP per minute, lock pairing ID after 5 failed auths for 5 minutes
-		RateLimiter: newRateLimiter(10, 1*time.Minute, 5, 5*time.Minute),
+		// Permissive rate limiting:
+		// - 100 connections per IP per minute (prevents DDoS/reconnection floods)
+		// - 20 failed auth attempts before locking out a pairing ID
+		// - 2-minute lockout duration (short enough to be a minor annoyance for users, long enough to stop bots)
+		RateLimiter: newRateLimiter(100, 1*time.Minute, 20, 2*time.Minute),
 	}
 }
 
