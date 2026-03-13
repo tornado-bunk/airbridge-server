@@ -108,8 +108,13 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 
 	// Try parsing it as JSON to see if it's a control message
 	baseMsg, err := models.ParseIncomingMessage(message)
-	if err != nil {
-		slog.Warn("Failed to parse incoming text message", "error", err)
+	if err != nil || baseMsg.Action == "" {
+		// Not a valid control message. If the tunnel is active, route it to the peer.
+		if session.HasBothClients() {
+			handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
+		} else {
+			slog.Warn("Failed to parse incoming text message (relay not active, dropping)", "error", err)
+		}
 		return
 	}
 
@@ -117,11 +122,46 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 	case models.ActionRegister:
 		var regMsg models.RegisterMessage
 		if err := json.Unmarshal(message, &regMsg); err == nil {
-			slog.Info("Mac Registered", "pairing_id", session.PairingID, "ip", regMsg.LocalIP, "port", regMsg.Port)
-			session.Lock()
-			session.MacLocalIP = regMsg.LocalIP
-			session.MacPort = regMsg.Port
-			session.Unlock()
+			if client.Role == models.RoleMac {
+				slog.Info("Mac Registered", "pairing_id", session.PairingID, "ip", regMsg.LocalIP, "port", regMsg.Port)
+				session.Lock()
+				session.MacLocalIP = regMsg.LocalIP
+				session.MacPort = regMsg.Port
+				session.Unlock()
+			} else {
+				slog.Info("Android Registered", "pairing_id", session.PairingID, "ip", regMsg.LocalIP)
+			}
+
+			// Auto-start relay when both clients are connected
+			if session.HasBothClients() {
+				resp := models.BaseMessage{
+					Action:    models.ActionRelayStarted,
+					PairingID: session.PairingID,
+				}
+				b, _ := json.Marshal(resp)
+				env := models.Envelope{Type: websocket.TextMessage, Data: b}
+
+				session.RLock()
+				mac := session.Mac
+				android := session.Android
+				session.RUnlock()
+
+				if mac != nil {
+					select {
+					case mac.Send <- env:
+					default:
+						slog.Warn("Send buffer full for Mac, dropping relay_started", "pairing_id", session.PairingID)
+					}
+				}
+				if android != nil {
+					select {
+					case android.Send <- env:
+					default:
+						slog.Warn("Send buffer full for Android, dropping relay_started", "pairing_id", session.PairingID)
+					}
+				}
+				slog.Info("Relay auto-started (both clients connected)", "pairing_id", session.PairingID)
+			}
 		}
 
 	case models.ActionQuery:
@@ -202,8 +242,12 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 		}
 
 	default:
-		// If it reaches here, it's a valid JSON but with an unknown/unsupported Action.
-		slog.Warn("Unknown or unsupported action, dropping message", "action", baseMsg.Action, "pairing_id", session.PairingID)
+		// If it reaches here, it might be a valid JSON payload meant for the peer
+		if session.HasBothClients() {
+			handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
+		} else {
+			slog.Warn("Unknown or unsupported action, dropping message (relay not active)", "action", baseMsg.Action, "pairing_id", session.PairingID)
+		}
 	}
 }
 

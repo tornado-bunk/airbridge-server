@@ -1,0 +1,11 @@
+services:
+  airbridge-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airbridge-server
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+    ports:
+      - "8080:8080"

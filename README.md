@@ -60,6 +60,35 @@ To start the server on `localhost:8080`:
 go run ./cmd/server
 ```
 
+## Run with Docker
+
+### Build image
+```bash
+docker build -t airbridge-server .
+```
+
+### Run container
+```bash
+docker run --rm -p 8080:8080 -e PORT=8080 --name airbridge-server airbridge-server
+```
+
+### Run with Docker Compose
+```bash
+docker compose up --build -d
+```
+
+### Quick health checks
+```bash
+curl http://localhost:8080/
+```
+
+Expected response:
+```text
+Sync Relay Server is running
+```
+
+WebSocket endpoint (behind reverse proxy/Cloudflare): `/ws`
+
 ### Running Tests
 Unit tests model the Mac and Android behavior locally without opening TCP ports. To run the Go unit tests:
 
