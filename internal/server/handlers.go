@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -13,16 +15,61 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096 * 8, // 32KB for high-throughput binary relays
 	WriteBufferSize: 4096 * 8, // 32KB for high-throughput binary relays
-	// Allowing all origins for simple self-hosted usage.
-	// NOTE: In a strictly public production environment, this should be restricted
-	// to known origins or domains!
+	// Only allow connections from native clients (no Origin header) or
+	// explicitly allowed origins set via ALLOWED_ORIGINS env var.
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // Native app clients (Swift/Kotlin) don't send Origin
+		}
+		// Check against allowed origins from environment variable
+		allowed := os.Getenv("ALLOWED_ORIGINS") // comma-separated, e.g. "https://airbridge.tornado.ovh,https://example.com"
+		if allowed == "" {
+			// If no allowed origins configured, reject all browser-originated requests
+			slog.Warn("WebSocket connection rejected: browser Origin present but no ALLOWED_ORIGINS configured", "origin", origin)
+			return false
+		}
+		for _, a := range strings.Split(allowed, ",") {
+			if strings.TrimSpace(a) == origin {
+				return true
+			}
+		}
+		slog.Warn("WebSocket connection rejected: Origin not in ALLOWED_ORIGINS", "origin", origin)
+		return false
 	},
+}
+
+// realClientIP extracts the true client IP from the request.
+// It checks Cloudflare's CF-Connecting-IP header first, then X-Forwarded-For,
+// and falls back to r.RemoteAddr. This ensures the rate limiter works correctly
+// when the server is behind Cloudflare or another reverse proxy.
+func realClientIP(r *http.Request) string {
+	// Cloudflare sets this to the actual client IP
+	if cfIP := r.Header.Get("CF-Connecting-IP"); cfIP != "" {
+		return cfIP
+	}
+	// Standard reverse-proxy header (first entry is the original client)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.SplitN(xff, ",", 2)
+		if ip := strings.TrimSpace(parts[0]); ip != "" {
+			return ip
+		}
+	}
+	return r.RemoteAddr
 }
 
 // ServeWs handles websocket requests from the peer.
 func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	// Extract real client IP (Cloudflare / reverse-proxy aware)
+	clientIP := realClientIP(r)
+
+	// Rate limit: reject excessive connections from the same IP
+	if !hub.RateLimiter.AllowConnection(clientIP) {
+		slog.Warn("Rate limited connection attempt", "remote_addr", clientIP)
+		http.Error(w, "Too many requests", http.StatusTooManyRequests)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("Failed to upgrade websocket", "error", err)
@@ -62,6 +109,13 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this pairing ID is locked out due to too many failed auth attempts
+	if !hub.RateLimiter.AllowAuth(baseMsg.PairingID) {
+		slog.Warn("Connection rejected: pairing ID locked out", "pairing_id", baseMsg.PairingID)
+		conn.Close()
+		return
+	}
+
 	session := hub.GetOrCreateSession(baseMsg.PairingID, baseMsg.Secret)
 
 	client := &models.Client{
@@ -75,10 +129,14 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !session.AttachClient(client, baseMsg.Secret) {
+		hub.RateLimiter.RecordAuthFailure(baseMsg.PairingID)
 		slog.Warn("Connection rejected: Invalid secret", "role", baseMsg.Role, "pairing_id", baseMsg.PairingID)
 		conn.Close()
 		return
 	}
+
+	// Auth succeeded — clear any prior failure tracking for this pairing ID
+	hub.RateLimiter.RecordAuthSuccess(baseMsg.PairingID)
 
 	// Handle the initial message immediately (it's always JSON/Text)
 	handleMessage(hub, client, session, websocket.TextMessage, initialMsgBytes)
@@ -165,6 +223,21 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 		}
 
 	case models.ActionQuery:
+		// Only Android clients should query Mac info
+		if client.Role != models.RoleAndroid {
+			slog.Warn("Query rejected: only Android clients may query Mac info", "role", client.Role, "pairing_id", session.PairingID)
+			resp := models.ErrorMessage{
+				Action:  models.ActionError,
+				Message: "Only Android clients may query Mac info",
+			}
+			b, _ := json.Marshal(resp)
+			select {
+			case client.Send <- models.Envelope{Type: websocket.TextMessage, Data: b}:
+			default:
+			}
+			break
+		}
+
 		session.RLock()
 		ip := session.MacLocalIP
 		port := session.MacPort

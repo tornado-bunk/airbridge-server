@@ -15,12 +15,17 @@ type Hub struct {
 
 	// Mutex to protect concurrent access to the sessions map
 	mu sync.RWMutex
+
+	// Rate limiter for connection and auth throttling
+	RateLimiter *rateLimiter
 }
 
 // NewHub creates and returns a new Hub
 func NewHub() *Hub {
 	return &Hub{
 		sessions: make(map[string]*models.Session),
+		// Allow 10 connections per IP per minute, lock pairing ID after 5 failed auths for 5 minutes
+		RateLimiter: newRateLimiter(10, 1*time.Minute, 5, 5*time.Minute),
 	}
 }
 

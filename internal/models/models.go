@@ -1,6 +1,7 @@
 package models
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"sync"
 	"time"
@@ -61,38 +62,39 @@ func NewSession(pairingID string, secret string) *Session {
 	}
 }
 
-// AttachClient safely attaches a client to the appropriate role in the session
+// AttachClient safely attaches a client to the appropriate role in the session.
 // Returns a boolean indicating whether the attachment was successful (secret matches).
+// If the role slot is already occupied, the new connection is rejected to prevent session hijacking.
 func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 	s.Lock()
 
-	// If the session was already created, the incoming client MUST match the initial secret
-	if s.Secret != "" && s.Secret != providedSecret {
+	// If the session was already created, the incoming client MUST match the initial secret.
+	// Use constant-time comparison to prevent timing side-channel attacks.
+	if s.Secret != "" && subtle.ConstantTimeCompare([]byte(s.Secret), []byte(providedSecret)) != 1 {
 		s.Unlock()
 		slog.Warn("Client attempted to join session with invalid secret", "pairing_id", s.PairingID, "role", c.Role)
 		return false
 	}
 
-	var oldClient *Client
+	// Reject the connection if the role slot is already occupied (prevents session hijacking).
+	if c.Role == RoleMac && s.Mac != nil {
+		s.Unlock()
+		slog.Warn("Connection rejected: Mac slot already occupied (session hijacking prevention)", "pairing_id", s.PairingID)
+		return false
+	} else if c.Role == RoleAndroid && s.Android != nil {
+		s.Unlock()
+		slog.Warn("Connection rejected: Android slot already occupied (session hijacking prevention)", "pairing_id", s.PairingID)
+		return false
+	}
+
 	if c.Role == RoleMac {
-		if s.Mac != nil {
-			oldClient = s.Mac
-		}
 		s.Mac = c
 	} else if c.Role == RoleAndroid {
-		if s.Android != nil {
-			oldClient = s.Android
-		}
 		s.Android = c
 	}
 	s.UpdatedAt = time.Now()
 	s.Unlock()
 
-	// Perform I/O outside of the lock
-	if oldClient != nil {
-		slog.Info("Replacing existing client in session", "pairing_id", s.PairingID, "role", oldClient.Role)
-		oldClient.Conn.Close()
-	}
 	return true
 }
 
