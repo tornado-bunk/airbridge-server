@@ -1,102 +1,77 @@
-# Sync Relay Server
+# AirBridge 
 
-A standalone Signaling and E2EE Relay server built in Go for the AirSync project.
+A lightweight, high-performance, self-hosted relay server built in Go for the **AirSync** ecosystem.
 
-## Purpose
+AirBridge acts as a secure middleman (a "dumb pipe") that allows your Android device and Mac to stay seamlessly connected even when they leave the local Wi-Fi network (e.g., when switching to 4G/5G or a different network).
 
-1. **Signaling (Discovery):** Allows Mac and Android devices on the same local network to discover each other's IP addresses and Ports, bypassing mDNS/Bonjour sleep issues typically encountered on macOS.
-2. **Relay (Tunnel):** Acts as a high-performance "dumb pipe" to relay End-to-End Encrypted (E2EE) traffic between devices if a direct local connection cannot be established or drops. The server cannot read the AES-encrypted data.
+## ✨ Why AirBridge?
+By default, AirSync works beautifully over a direct Local Area Network (LAN) connection. However, if you want a seamless "Apple-style" ecosystem experience where notifications, clipboards, and controls sync regardless of where you are, you need a bridge.
 
-## Server Architecture
-- Written in **Go (Golang)** for high concurrency.
-- Uses **Gorilla WebSockets** for persistent full-duplex communication.
-- Maintains in-memory sessions using thread-safe maps (`sync.RWMutex`).
-- Features **Heartbeat Monitoring** to automatically prune dead connections.
+AirBridge solves this by providing a persistent WebSocket tunnel between your devices over the internet, automatically taking over when LAN is unavailable.
 
-## Security & Deployment
+## 🔒 Zero-Knowledge & Security
+Security is the absolute priority of this project. AirBridge is designed purely as a **"Dumb Pipe"**:
+- **End-to-End Encryption (E2E):** The server **never** sees your plaintext data. All payloads are encrypted locally on your devices using a Symmetric Key (exchanged safely during the initial LAN QR-code pairing) before hitting the relay. The server cannot read the AES-encrypted data.
+- **Zero-Knowledge Authentication:** The server authenticates clients using a hashed version (`SHA-256`) of your pairing secret. The server keeps session state in-memory only and never stores your actual secrets.
+- **No ADB over Internet:** For strict security reasons, deep system access features like ADB and file transfers are completely forbidden over the relay. The client apps will actively drop any ADB requests coming from the internet.
 
-This server is designed to be easily self-hostable. 
+## 🚀 Architecture & Tech Stack
+While heavier frameworks like Spring Boot were considered, **Go (Golang)** was chosen for this server.
+- **Extremely Lightweight:** Uses minimal RAM and CPU, making it perfect for cheap VPS instances (like a $3/month server) or a Raspberry Pi.
+- **High Concurrency:** Go's goroutines and the `gorilla/websocket` package make it exceptionally good at handling persistent, long-lived WebSocket connections simultaneously without breaking a sweat.
+- **Auto-Cleanup:** Features a built-in Heartbeat Monitor that automatically prunes dead or abandoned connections to prevent memory leaks.
 
-### TLS / WSS
-**IMPORTANT:** The application exchanges sensitive clipboard, text, and file data. While the application payloads are End-to-End Encrypted using AES, the WebSocket protocol metadata (roles, actions) is not. **You must run this server over WSS (Secure WebSocket) in production.**
+## 🛠 Setup & Deployment
+This server is designed to be easily self-hostable using Docker.
 
-### Recommended Setup: Reverse Proxy (Nginx Proxy Manager / Caddy)
-We strongly recommend **not** embedding SSL certificates directly into the Go application. Instead, run the Go server locally (e.g., `localhost:8080`) and expose it to the internet using a Reverse Proxy like **Nginx, Nginx Proxy Manager (NPM), or Caddy**.
-
-The proxy will handle:
-- TLS Termination (Auto-renewing Let's Encrypt Certificates).
-- HTTP/2 Upgrade headers required for WSS.
-- Rate Limiting and DDoS protection.
-
-#### Example Nginx Configuration
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name relay.yourdomain.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location /ws {
-        proxy_pass http://127.0.0.1:8080;
-        
-        # Required to upgrade the connection to WebSocket
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_set_header Host $host;
-
-        # Optional: Increase timeouts for long-lived Relay Tunnels
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-    }
-}
-```
-
-## Running the Server Locally
-To start the server on `localhost:8080`:
+### Running with Docker Compose (Recommended)
+The easiest way to get started is using the provided `docker-compose.yml`:
 
 ```bash
-go run ./cmd/server
-```
+# Clone the repository
+git clone https://github.com/tornado-bunk/airbridge-server.git
+cd airbridge-server
 
-## Run with Docker
-
-### Build image
-```bash
-docker build -t airbridge-server .
-```
-
-### Run container
-```bash
-docker run --rm -p 8080:8080 -e PORT=8080 --name airbridge-server airbridge-server
-```
-
-### Run with Docker Compose
-```bash
+# Run in the background
 docker compose up --build -d
 ```
 
-### Quick health checks
+### Running from source (Go)
+```bash
+# Run directly
+go run ./cmd/server
+
+# Or build the binary
+go build -o airbridge ./cmd/server
+./airbridge -addr :8080
+```
+
+## 🛡️ TLS / WSS Setup (Crucial for Production)
+**IMPORTANT:** While the *application payloads* are End-to-End Encrypted, the WebSocket protocol metadata (like connection roles) is not. **You MUST run this server over WSS (Secure WebSocket) in production.**
+
+### My Personal Setup
+I currently run this server behind **Cloudflare** and **Nginx Proxy Manager (NPM)**, and it works flawlessly. Cloudflare provides DDoS protection and DNS routing, while NPM handles the SSL/TLS termination and proxies the WebSocket connection (`wss://`) to the internal Go container. 
+
+*Note: Other proxy configurations (like raw Nginx, Caddy, or Traefik) should work conceptually, but they have not been actively tested by me.*
+
+If you are using Nginx Proxy Manager with Cloudflare, I highly recommend adding the following in the **Custom Nginx Configuration** tab (Advanced section) to ensure long-lived WebSocket connections don't drop and to correctly pass the real client IPs:
+
+```nginx
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+proxy_buffering off;
+proxy_set_header CF-Connecting-IP $http_cf_connecting_ip;
+proxy_set_header X-Forwarded-For $http_cf_connecting_ip;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header Connection "upgrade";
+```
+
+### Quick Health Check
+Once running, you can test if the server is up:
 ```bash
 curl http://localhost:8080/
 ```
+Expected response: `Sync Relay Server is running`
 
-Expected response:
-```text
-Sync Relay Server is running
-```
-
-WebSocket endpoint (behind reverse proxy/Cloudflare): `/ws`
-
-### Running Tests
-Unit tests model the Mac and Android behavior locally without opening TCP ports. To run the Go unit tests:
-
-```bash
-go test -v ./tests
-```
-
-A Python mock script is also provided for visual, E2E WebSocket payload tracing:
-```bash
-python3 tests/simulate_clients.py
-```
+---
+*Disclaimer: This is a personal side-project built as a extension of the amazing original AirSync app.*
