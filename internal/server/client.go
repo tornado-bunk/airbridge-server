@@ -41,7 +41,7 @@ func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandle
 	for {
 		messageType, message, err := c.Conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Error("Unexpected websocket close error", "error", err)
 			}
 			break
