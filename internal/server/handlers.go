@@ -222,6 +222,34 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 		} else {
 			slog.Warn("Dropping message (relay not active, peer not connected)", "action", baseMsg.Action, "pairing_id", models.TruncateID(session.PairingID))
 		}
+	case models.ActionQueryStatus:
+		// Health-check style query: report which roles are currently attached.
+		session.RLock()
+		macActive := session.Mac != nil
+		androidActive := session.Android != nil
+		session.RUnlock()
+
+		status := models.StatusReplyMessage{
+			Action:        models.ActionStatusReply,
+			PairingID:     session.PairingID,
+			MacActive:     macActive,
+			AndroidActive: androidActive,
+			BothConnected: macActive && androidActive,
+		}
+
+		b, err := json.Marshal(status)
+		if err != nil {
+			slog.Error("Failed to marshal status_reply", "error", err, "pairing_id", models.TruncateID(session.PairingID))
+			return
+		}
+
+		env := models.Envelope{Type: websocket.TextMessage, Data: b}
+		select {
+		case client.Send <- env:
+			slog.Info("Status reply sent", "pairing_id", models.TruncateID(session.PairingID), "role", client.Role, "mac_active", macActive, "android_active", androidActive)
+		default:
+			slog.Warn("Send buffer full when sending status_reply", "pairing_id", models.TruncateID(session.PairingID), "role", client.Role)
+		}
 	}
 }
 
