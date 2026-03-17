@@ -1,10 +1,15 @@
-# AirBridge 
 
-A lightweight, high-performance, self-hosted relay server built in Go for the **AirSync** ecosystem.
+<p align="center">
+  <img src="res/logo.webp" alt="AirBridge logo" width="220" />
+</p>
+
+<p align="center">
+  Lightweight, high-performance, self-hosted relay server in Go for the <b>AirSync</b> ecosystem.
+</p>
 
 AirBridge acts as a secure middleman (a "dumb pipe") that allows your Android device and Mac to stay seamlessly connected even when they leave the local Wi-Fi network (e.g., when switching to 4G/5G or a different network).
 
-## ✨ Why AirBridge?
+## ✨ Why AirBridge
 By default, AirSync works beautifully over a direct Local Area Network (LAN) connection. However, if you want a seamless "Apple-style" ecosystem experience where notifications, clipboards, and controls sync regardless of where you are, you need a bridge.
 
 AirBridge solves this by providing a persistent WebSocket tunnel between your devices over the internet, automatically taking over when LAN is unavailable.
