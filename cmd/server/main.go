@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -14,7 +15,18 @@ import (
 	"github.com/tornado-bunk/airbridge-server/internal/server"
 )
 
+func printBanner() {
+	fmt.Fprintln(os.Stdout, "    ___    _      ____       _     _           ")
+	fmt.Fprintln(os.Stdout, "   / _ |  (_)____/ __ )_____(_)___| |__  ____ _")
+	fmt.Fprintln(os.Stdout, "  / __ | / / ___/ __  / ___/ / __ \\ '_ \\/ __ `/")
+	fmt.Fprintln(os.Stdout, " /_/ |_|/_/\\__/ /_____/\\__/_/\\___/_| |_/_/ /_/ ")
+	fmt.Fprintln(os.Stdout, "                 AirBridge Relay Server         ")
+	fmt.Fprintln(os.Stdout)
+}
+
 func main() {
+	printBanner()
+
 	var addr = flag.String("addr", "", "http service address (overrides PORT env)")
 	flag.Parse()
 
