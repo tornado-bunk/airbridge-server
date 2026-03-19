@@ -214,6 +214,14 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 			}
 			slog.Info("Relay auto-started (both clients connected)", "pairing_id", models.TruncateID(session.PairingID))
 		}
+	case models.ActionTransportOffer, models.ActionTransportAnswer, models.ActionTransportCheck, models.ActionTransportCheckAck, models.ActionTransportNominate:
+		// Relay-assisted LAN negotiation messages are transparently forwarded to the peer.
+		if session.HasBothClients() {
+			slog.Debug("Relaying transport negotiation message", "action", baseMsg.Action, "pairing_id", models.TruncateID(session.PairingID), "from", client.Role)
+			handleRelayMessage(session, client, models.Envelope{Type: messageType, Data: message})
+		} else {
+			slog.Warn("Dropping transport negotiation message (peer not connected)", "action", baseMsg.Action, "pairing_id", models.TruncateID(session.PairingID))
+		}
 
 	default:
 		// Any other message (JSON or otherwise) is relayed to the peer
