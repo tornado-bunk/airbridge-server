@@ -40,6 +40,11 @@ type Client struct {
 	Send      chan Envelope   // Buffered channel for outbound messages
 	Done      chan struct{}   // Channel to signal WritePump to exit
 	CloseOnce sync.Once       // Ensures Done is closed at most once (prevents panic)
+
+	// Per-client fixed-window limiter for transport negotiation messages.
+	NegotiationMu          sync.Mutex
+	NegotiationWindowStart time.Time
+	NegotiationCount       int
 }
 
 // CloseDone safely closes the Done channel exactly once.

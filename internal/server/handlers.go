@@ -40,6 +40,11 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+const (
+	transportNegotiationWindow       = time.Second
+	transportNegotiationMaxPerWindow = 20
+)
+
 // realClientIP extracts the true client IP from the request.
 // When TRUST_PROXY=true, it reads X-Forwarded-For (set by any standard
 // reverse proxy like Nginx, NPM, Traefik, Caddy, etc.).
@@ -152,6 +157,22 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func allowNegotiationMessage(client *models.Client) bool {
+	now := time.Now()
+	client.NegotiationMu.Lock()
+	defer client.NegotiationMu.Unlock()
+
+	if client.NegotiationWindowStart.IsZero() || now.Sub(client.NegotiationWindowStart) >= transportNegotiationWindow {
+		client.NegotiationWindowStart = now
+		client.NegotiationCount = 0
+	}
+	if client.NegotiationCount >= transportNegotiationMaxPerWindow {
+		return false
+	}
+	client.NegotiationCount++
+	return true
+}
+
 // handleMessage routes messages depending on their parsed action
 func handleMessage(hub *Hub, client *models.Client, session *models.Session, messageType int, message []byte) {
 	slog.Debug("Received message", "role", client.Role, "len", len(message))
@@ -215,6 +236,10 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 			slog.Info("Relay auto-started (both clients connected)", "pairing_id", models.TruncateID(session.PairingID))
 		}
 	case models.ActionTransportOffer, models.ActionTransportAnswer, models.ActionTransportCheck, models.ActionTransportCheckAck, models.ActionTransportNominate:
+		if !allowNegotiationMessage(client) {
+			slog.Warn("Dropping transport negotiation message (rate limited)", "action", baseMsg.Action, "pairing_id", models.TruncateID(session.PairingID), "from", client.Role)
+			return
+		}
 		// Relay-assisted LAN negotiation messages are transparently forwarded to the peer.
 		if session.HasBothClients() {
 			slog.Debug("Relaying transport negotiation message", "action", baseMsg.Action, "pairing_id", models.TruncateID(session.PairingID), "from", client.Role)
