@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="res/logo.webp" alt="AirBridge logo" width="220" />
+  <img src="res/logo.webp" alt="AirBridge logo" width="440" />
 </p>
 
 <p align="center">
@@ -17,8 +17,13 @@ AirBridge solves this by providing a persistent WebSocket tunnel between your de
 ## 🔒 Zero-Knowledge & Security
 Security is the absolute priority of this project. AirBridge is designed purely as a **"Dumb Pipe"**:
 - **End-to-End Encryption (E2E):** The server **never** sees your plaintext data. All payloads are encrypted locally on your devices using a Symmetric Key (exchanged safely during the initial LAN QR-code pairing) before hitting the relay. The server cannot read the AES-encrypted data.
-- **Zero-Knowledge Authentication:** The server authenticates clients using a hashed version (`SHA-256`) of your pairing secret. The server keeps session state in-memory only and never stores your actual secrets.
+- **HMAC-SHA256 Challenge-Response Authentication:** The server authenticates clients using a secure 2-step handshake. The server sends a random nonce (challenge), and the client responds with an HMAC signature computed using a hashed version of your pairing secret. This completely prevents replay attacks and pass-the-hash vulnerabilities. The server keeps the session key in-memory only and never stores your actual secrets.
 - **No ADB over Internet:** For strict security reasons, deep system access features like ADB and file transfers are completely forbidden over the relay. The client apps will actively drop any ADB requests coming from the internet.
+
+## 📖 How It Works
+For a detailed technical explanation of the HMAC-SHA256 authentication, the End-to-End (E2E) encryption, and the full message flow between clients and the server, please refer to the protocol documentation:
+
+➡️ **[PROTOCOL](PROTOCOL.md)**
 
 ## 🚀 Architecture & Tech Stack
 While heavier frameworks like Spring Boot were considered, **Go (Golang)** was chosen for this server.
@@ -79,4 +84,4 @@ curl http://localhost:8080/
 Expected response: `Sync Relay Server is running`
 
 ---
-*Disclaimer: This is a personal side-project built as a extension of the amazing original AirSync app.*
+*Disclaimer: This is a personal side-project built as an AI-aided extension of the amazing original AirSync app.*
