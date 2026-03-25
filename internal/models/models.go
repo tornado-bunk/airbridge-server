@@ -1,7 +1,10 @@
 package models
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -57,7 +60,8 @@ func (c *Client) CloseDone() {
 // Session represents an active pairing between a Mac and an Android device
 type Session struct {
 	PairingID string
-	Secret    string // The authentication secret establishing this session
+	Key       [32]byte // HMAC verification key: SHA256(secret_raw)
+	HasKey    bool     // true once Key has been set (false during bootstrap before first kInit)
 
 	Mac     *Client
 	Android *Client
@@ -69,33 +73,58 @@ type Session struct {
 	sync.RWMutex
 }
 
-// NewSession creates and returns a new session
-func NewSession(pairingID string, secret string) *Session {
+// NewSession creates a session with a known key (used when kInit is provided during bootstrap)
+func NewSession(pairingID string, key [32]byte) *Session {
 	return &Session{
 		PairingID: pairingID,
-		Secret:    secret,
+		Key:       key,
+		HasKey:    true,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 }
 
-// AttachClient safely attaches a client to the appropriate role in the session.
-// Returns false if the provided secret doesn't match (auth failure).
-// If the role slot is already occupied by a stale connection, the old one is
-// replaced (the new client has already proven it knows the secret).
-func (s *Session) AttachClient(c *Client, providedSecret string) bool {
-	s.Lock()
+// VerifyHMAC checks whether the provided HMAC signature is valid for the given parameters.
+// Returns true if the signature matches, false otherwise.
+// Uses constant-time comparison to prevent timing side-channel attacks.
+func (s *Session) VerifyHMAC(nonce, pairingID string, role Role, sig string) bool {
+	s.RLock()
+	key := s.Key
+	hasKey := s.HasKey
+	s.RUnlock()
 
-	// If the session was already created, the incoming client MUST match the initial secret.
-	// Use constant-time comparison to prevent timing side-channel attacks.
-	if s.Secret != "" && subtle.ConstantTimeCompare([]byte(s.Secret), []byte(providedSecret)) != 1 {
-		s.Unlock()
-		slog.Warn("Client attempted to join session with invalid secret", "pairing_id", TruncateID(s.PairingID), "role", c.Role)
+	if !hasKey {
+		slog.Warn("VerifyHMAC called on session without key", "pairing_id", TruncateID(pairingID))
 		return false
 	}
 
+	// Reconstruct the signed message: nonce|pairingId|role
+	msg := nonce + "|" + pairingID + "|" + string(role)
+
+	mac := hmac.New(sha256.New, key[:])
+	mac.Write([]byte(msg))
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(sig)) == 1
+}
+
+// SetKey sets the HMAC key on the session. Used during bootstrap when
+// the first client provides kInit.
+func (s *Session) SetKey(key [32]byte) {
+	s.Lock()
+	defer s.Unlock()
+	s.Key = key
+	s.HasKey = true
+}
+
+// AttachClient safely attaches a client to the appropriate role in the session.
+// If the role slot is already occupied by a stale connection, the old one is
+// replaced (the new client has already proven knowledge of K via HMAC).
+func (s *Session) AttachClient(c *Client) {
+	s.Lock()
+
 	// If the role slot is already occupied, replace the old (stale) connection.
-	// The new client has already proven it knows the secret, so this is a legitimate reconnection
+	// The new client has already proven it knows the secret via HMAC, so this is a legitimate reconnection.
 	// We close the old connection gracefully to free resources.
 	if c.Role == RoleMac {
 		if old := s.Mac; old != nil && old != c {
@@ -114,8 +143,6 @@ func (s *Session) AttachClient(c *Client, providedSecret string) bool {
 	}
 	s.UpdatedAt = time.Now()
 	s.Unlock()
-
-	return true
 }
 
 // DetachClient safely removes a client from the session if it matches the current one

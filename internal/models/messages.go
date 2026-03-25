@@ -6,7 +6,8 @@ import "encoding/json"
 type ActionType string
 
 const (
-	ActionRegister     ActionType = "register"       // Sent by client to join a session
+	ActionChallenge  ActionType = "challenge"    // Sent by Server after WS connect (step 1 of handshake)
+	ActionRegister   ActionType = "register"     // Sent by client with HMAC sig (step 2 of handshake)
 	ActionRelayStarted ActionType = "relay_started"  // Sent by Server to both when tunnel is ready
 	ActionError        ActionType = "error"          // Sent by Server when something goes wrong
 	ActionQueryStatus  ActionType = "query_status"   // Sent by client to query current session health
@@ -22,8 +23,15 @@ const (
 type BaseMessage struct {
 	Action    ActionType `json:"action"`
 	PairingID string     `json:"pairingId"`
-	Secret    string     `json:"secret,omitempty"` // Used to authenticate the connection
-	Role      Role       `json:"role,omitempty"`   // "mac" or "android" (optional for some actions)
+	Role      Role       `json:"role,omitempty"`
+	Sig       string     `json:"sig,omitempty"`   // HMAC-SHA256 signature (hex), used in register
+	KInit     string     `json:"kInit,omitempty"` // Bootstrap key (hex), only for session creation
+}
+
+// ChallengeMessage is sent by the server to the client immediately after WS upgrade
+type ChallengeMessage struct {
+	Action ActionType `json:"action"` // Always "challenge"
+	Nonce  string     `json:"nonce"`  // Random 32 bytes hex-encoded (64 chars)
 }
 
 // ErrorMessage represents an error event from the server

@@ -32,19 +32,25 @@ func NewHub() *Hub {
 	}
 }
 
-// GetOrCreateSession retrieves an existing session from the hub or creates a new one
-func (h *Hub) GetOrCreateSession(pairingID string, secret string) *models.Session {
+// GetOrCreateSession retrieves an existing session from the hub or creates a new one.
+// Returns the session and a boolean indicating whether it was newly created (for bootstrap).
+func (h *Hub) GetOrCreateSession(pairingID string) (*models.Session, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if session, exists := h.sessions[pairingID]; exists {
-		return session
+		return session, false
 	}
 
-	slog.Info("Creating new session", "pairing_id", models.TruncateID(pairingID))
-	newSession := models.NewSession(pairingID, secret)
+	slog.Info("Creating new session (pending key bootstrap)", "pairing_id", models.TruncateID(pairingID))
+	// Create session without a key — the first client's kInit will set it
+	newSession := &models.Session{
+		PairingID: pairingID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
 	h.sessions[pairingID] = newSession
-	return newSession
+	return newSession, true
 }
 
 // GetSession retrieves a session or returns nil if it doesn't exist

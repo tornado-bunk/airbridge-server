@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -43,6 +45,9 @@ var upgrader = websocket.Upgrader{
 const (
 	transportNegotiationWindow       = time.Second
 	transportNegotiationMaxPerWindow = 20
+	handshakeTimeout                 = 10 * time.Second
+	handshakeMaxSize                 = 64 * 1024 // 64KB max during handshake
+	nonceBytes                       = 32        // 32 random bytes = 64 hex chars
 )
 
 // realClientIP extracts the true client IP from the request.
@@ -67,7 +72,19 @@ func realClientIP(r *http.Request) string {
 	return host
 }
 
+// generateNonce generates a cryptographically random nonce for challenge-response auth.
+func generateNonce() (string, error) {
+	b := make([]byte, nonceBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // ServeWs handles websocket requests from the peer.
+// Implements a 2-step HMAC challenge-response handshake:
+//  1. Server sends challenge with random nonce
+//  2. Client responds with register containing HMAC-SHA256 signature
 func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	// Extract real client IP (Cloudflare / reverse-proxy aware)
 	clientIP := realClientIP(r)
@@ -85,18 +102,44 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// We don't know the exact Role/PairingID yet until the first message.
-	// We create a temporary client just to listen to the first message.
+	// --- Step 1: Send challenge ---
 
-	// Require the first packet within 10 seconds to prevent Phantom Client attacks (DoS)
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	// Prevent an OOM attack where the client sends a multi-gigabyte text frame as the handshake
-	conn.SetReadLimit(64 * 1024)
-
-	// Read first message (handshake/registration)
-	_, initialMsgBytes, err := conn.ReadMessage()
+	nonce, err := generateNonce()
 	if err != nil {
-		slog.Error("Failed to read initial handshake message", "error", err)
+		slog.Error("Failed to generate nonce", "error", err)
+		conn.Close()
+		return
+	}
+
+	challenge := models.ChallengeMessage{
+		Action: models.ActionChallenge,
+		Nonce:  nonce,
+	}
+	challengeBytes, err := json.Marshal(challenge)
+	if err != nil {
+		slog.Error("Failed to marshal challenge", "error", err)
+		conn.Close()
+		return
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+	if err := conn.WriteMessage(websocket.TextMessage, challengeBytes); err != nil {
+		slog.Error("Failed to send challenge", "error", err)
+		conn.Close()
+		return
+	}
+	slog.Debug("Challenge sent", "nonce_prefix", nonce[:8]+"...")
+
+	// --- Step 2: Read register with HMAC signature ---
+
+	// Require the register response within handshakeTimeout to prevent Phantom Client attacks (DoS)
+	conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	// Prevent an OOM attack where the client sends a multi-gigabyte text frame as the handshake
+	conn.SetReadLimit(int64(handshakeMaxSize))
+
+	_, registerBytes, err := conn.ReadMessage()
+	if err != nil {
+		slog.Error("Failed to read register message", "error", err)
 		conn.Close()
 		return
 	}
@@ -104,9 +147,16 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	// Remove the temporary handshake deadline
 	conn.SetReadDeadline(time.Time{})
 
-	baseMsg, err := models.ParseIncomingMessage(initialMsgBytes)
+	baseMsg, err := models.ParseIncomingMessage(registerBytes)
 	if err != nil || baseMsg.PairingID == "" {
-		slog.Error("Invalid initial message format", "error", err)
+		slog.Error("Invalid register message format", "error", err)
+		conn.Close()
+		return
+	}
+
+	// Must be a register action
+	if baseMsg.Action != models.ActionRegister {
+		slog.Warn("Expected register action, got", "action", baseMsg.Action)
 		conn.Close()
 		return
 	}
@@ -118,6 +168,13 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject if signature is missing (old clients or malformed requests)
+	if baseMsg.Sig == "" {
+		slog.Warn("Connection rejected: missing HMAC signature (expected auth v2)", "role", baseMsg.Role, "pairing_id", models.TruncateID(baseMsg.PairingID))
+		conn.Close()
+		return
+	}
+
 	// Check if this pairing ID is locked out due to too many failed auth attempts
 	if !hub.RateLimiter.AllowAuth(baseMsg.PairingID) {
 		slog.Warn("Connection rejected: pairing ID locked out", "pairing_id", models.TruncateID(baseMsg.PairingID))
@@ -125,7 +182,46 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := hub.GetOrCreateSession(baseMsg.PairingID, baseMsg.Secret)
+	// --- Verify HMAC ---
+
+	session, isNew := hub.GetOrCreateSession(baseMsg.PairingID)
+
+	if isNew {
+		// Bootstrap: first client creates the session and provides kInit
+		if baseMsg.KInit == "" {
+			slog.Warn("Connection rejected: new session requires kInit for bootstrap", "pairing_id", models.TruncateID(baseMsg.PairingID))
+			hub.RemoveSession(baseMsg.PairingID) // Clean up the empty session
+			conn.Close()
+			return
+		}
+
+		kInitBytes, err := hex.DecodeString(baseMsg.KInit)
+		if err != nil || len(kInitBytes) != 32 {
+			slog.Warn("Connection rejected: invalid kInit format", "pairing_id", models.TruncateID(baseMsg.PairingID))
+			hub.RemoveSession(baseMsg.PairingID)
+			conn.Close()
+			return
+		}
+
+		var key [32]byte
+		copy(key[:], kInitBytes)
+		session.SetKey(key)
+		slog.Info("Session bootstrapped with kInit", "pairing_id", models.TruncateID(baseMsg.PairingID))
+	}
+
+	// Verify the HMAC signature
+	if !session.VerifyHMAC(nonce, baseMsg.PairingID, baseMsg.Role, baseMsg.Sig) {
+		hub.RateLimiter.RecordAuthFailure(baseMsg.PairingID)
+		slog.Warn("Connection rejected: invalid HMAC signature", "role", baseMsg.Role, "pairing_id", models.TruncateID(baseMsg.PairingID))
+		if isNew {
+			hub.RemoveSession(baseMsg.PairingID)
+		}
+		conn.Close()
+		return
+	}
+
+	// Auth succeeded — clear any prior failure tracking for this pairing ID
+	hub.RateLimiter.RecordAuthSuccess(baseMsg.PairingID)
 
 	client := &models.Client{
 		ID:        string(baseMsg.Role) + "-" + baseMsg.PairingID, // e.g. "mac-abc"
@@ -137,18 +233,10 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		Done: make(chan struct{}),
 	}
 
-	if !session.AttachClient(client, baseMsg.Secret) {
-		hub.RateLimiter.RecordAuthFailure(baseMsg.PairingID)
-		slog.Warn("Connection rejected: Invalid secret", "role", baseMsg.Role, "pairing_id", models.TruncateID(baseMsg.PairingID))
-		conn.Close()
-		return
-	}
+	session.AttachClient(client)
 
-	// Auth succeeded — clear any prior failure tracking for this pairing ID
-	hub.RateLimiter.RecordAuthSuccess(baseMsg.PairingID)
-
-	// Handle the initial message immediately (it's always JSON/Text)
-	handleMessage(hub, client, session, websocket.TextMessage, initialMsgBytes)
+	// Handle the initial register message immediately (it's always JSON/Text)
+	handleMessage(hub, client, session, websocket.TextMessage, registerBytes)
 
 	// Start Go routines for reading and writing pumps
 	go WritePump(client)
