@@ -12,6 +12,7 @@ const (
 	ActionError        ActionType = "error"          // Sent by Server when something goes wrong
 	ActionQueryStatus  ActionType = "query_status"   // Sent by client to query current session health
 	ActionStatusReply  ActionType = "status_reply"   // Sent by Server in response to query_status
+	ActionMacInfo      ActionType = "mac_info"       // Sent by Server with Mac local IP and port info
 	ActionTransportOffer    ActionType = "transport_offer"     // Relayed negotiation message
 	ActionTransportAnswer   ActionType = "transport_answer"    // Relayed negotiation message
 	ActionTransportCheck    ActionType = "transport_check"     // Relayed negotiation message
@@ -26,6 +27,8 @@ type BaseMessage struct {
 	Role      Role       `json:"role,omitempty"`
 	Sig       string     `json:"sig,omitempty"`   // HMAC-SHA256 signature (hex), used in register
 	KInit     string     `json:"kInit,omitempty"` // Bootstrap key (hex), only for session creation
+	LocalIP   string     `json:"localIp,omitempty"`
+	Port      int        `json:"port,omitempty"`
 }
 
 // ChallengeMessage is sent by the server to the client immediately after WS upgrade

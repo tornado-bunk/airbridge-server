@@ -229,8 +229,10 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		PairingID: baseMsg.PairingID,
 		Conn:      conn,
 		// Buffer set to 2048 to prevent blocking the sender when relaying large binary files
-		Send: make(chan models.Envelope, 2048),
-		Done: make(chan struct{}),
+		Send:    make(chan models.Envelope, 2048),
+		Done:    make(chan struct{}),
+		LocalIP: baseMsg.LocalIP,
+		Port:    baseMsg.Port,
 	}
 
 	session.AttachClient(client)
@@ -322,6 +324,24 @@ func handleMessage(hub *Hub, client *models.Client, session *models.Session, mes
 				}
 			}
 			slog.Info("Relay auto-started (both clients connected)", "pairing_id", models.TruncateID(session.PairingID))
+
+			// Send mac_info control message to Android so it learns Mac's local IP and port
+			if android != nil && mac != nil {
+				macInfoMsg := map[string]any{
+					"action":    string(models.ActionMacInfo),
+					"pairingId": session.PairingID,
+					"localIp":   mac.LocalIP,
+					"port":      mac.Port,
+				}
+				bMacInfo, _ := json.Marshal(macInfoMsg)
+				envMacInfo := models.Envelope{Type: websocket.TextMessage, Data: bMacInfo}
+				select {
+				case android.Send <- envMacInfo:
+					slog.Info("Sent mac_info to Android", "pairing_id", models.TruncateID(session.PairingID), "mac_ip", mac.LocalIP, "mac_port", mac.Port)
+				default:
+					slog.Warn("Send buffer full when sending mac_info to Android", "pairing_id", models.TruncateID(session.PairingID))
+				}
+			}
 		}
 	case models.ActionTransportOffer, models.ActionTransportAnswer, models.ActionTransportCheck, models.ActionTransportCheckAck, models.ActionTransportNominate:
 		if !allowNegotiationMessage(client) {

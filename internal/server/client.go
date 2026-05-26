@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -29,6 +30,36 @@ func ReadPump(c *models.Client, hub *Hub, session *models.Session, messageHandle
 		session.DetachClient(c)
 		c.Conn.Close()
 		slog.Info("ReadPump closed, client detached", "client_role", c.Role, "pairing_id", models.TruncateID(c.PairingID))
+
+		// Notify the remaining peer that this client detached
+		session.RLock()
+		var peer *models.Client
+		if c.Role == models.RoleMac {
+			peer = session.Android
+		} else if c.Role == models.RoleAndroid {
+			peer = session.Mac
+		}
+		macActive := session.Mac != nil
+		androidActive := session.Android != nil
+		session.RUnlock()
+
+		if peer != nil {
+			status := models.StatusReplyMessage{
+				Action:        models.ActionStatusReply,
+				PairingID:     session.PairingID,
+				MacActive:     macActive,
+				AndroidActive: androidActive,
+				BothConnected: macActive && androidActive,
+			}
+			b, _ := json.Marshal(status)
+			env := models.Envelope{Type: websocket.TextMessage, Data: b}
+			select {
+			case peer.Send <- env:
+				slog.Info("Sent status_reply notification to peer", "role", peer.Role, "pairing_id", models.TruncateID(session.PairingID))
+			default:
+				slog.Warn("Send buffer full when notifying peer of disconnect", "role", peer.Role, "pairing_id", models.TruncateID(session.PairingID))
+			}
+		}
 	}()
 
 	c.Conn.SetReadLimit(maxMessageSize)

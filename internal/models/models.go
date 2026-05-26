@@ -43,6 +43,8 @@ type Client struct {
 	Send      chan Envelope   // Buffered channel for outbound messages
 	Done      chan struct{}   // Channel to signal WritePump to exit
 	CloseOnce sync.Once       // Ensures Done is closed at most once (prevents panic)
+	LocalIP   string          // Client's local IP address reported during registration
+	Port      int             // Client's local port reported during registration (Mac runs server)
 
 	// Per-client fixed-window limiter for transport negotiation messages.
 	NegotiationMu          sync.Mutex
