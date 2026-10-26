@@ -17,8 +17,8 @@ AirBridge solves this by providing a persistent WebSocket tunnel between your de
 ## 🔒 Zero-Knowledge & Security
 Security is the absolute priority of this project. AirBridge is designed purely as a **"Dumb Pipe"**:
 - **End-to-End Encryption (E2E):** The server **never** sees your plaintext data. All payloads are encrypted locally on your devices using a Symmetric Key (exchanged safely during the initial LAN QR-code pairing) before hitting the relay. The server cannot read the AES-encrypted data.
-- **HMAC-SHA256 Challenge-Response Authentication:** The server authenticates clients using a secure 2-step handshake. The server sends a random nonce (challenge), and the client responds with an HMAC signature computed using a hashed version of your pairing secret. This completely prevents replay attacks and pass-the-hash vulnerabilities. The server keeps the session key in-memory only and never stores your actual secrets.
-- **No ADB over Internet:** For strict security reasons, deep system access features like ADB and file transfers are completely forbidden over the relay. The client apps will actively drop any ADB requests coming from the internet.
+- **HMAC-SHA256 Challenge-Response Authentication:** The server authenticates clients using a secure 2-step handshake. The server sends a random nonce (challenge), and the client responds with an HMAC signature computed using a hashed version of your pairing secret. The nonce prevents replay of an old registration signature. The server keeps the HMAC key in memory; possession of that key allows relay authentication, so TLS and the server must protect it. Application messages use a separate AES key and the AB1 anti-replay framing described in the protocol.
+- **No ADB over Internet:** For strict security reasons, deep system access features like ADB and file transfers are completely forbidden over the relay. The client message handlers reject file browsing, Quick Share discovery, and ADB discovery requests received through the relay. This transport restriction requires the updated clients; disabling a UI control alone does not enforce it.
 
 ## 📖 How It Works
 For a detailed technical explanation of the HMAC-SHA256 authentication, the End-to-End (E2E) encryption, and the full message flow between clients and the server, please refer to the protocol documentation:
@@ -57,7 +57,7 @@ go build -o airbridge ./cmd/server
 ```
 
 ## 🛡️ TLS / WSS Setup (Crucial for Production)
-**IMPORTANT:** While the *application payloads* are End-to-End Encrypted, the WebSocket protocol metadata (like connection roles) is not. **You MUST run this server over WSS (Secure WebSocket) in production.**
+**IMPORTANT:** While the *application payloads* are End-to-End Encrypted, the registration carries the HMAC authentication key (`kInit`) and connection metadata outside the E2E layer. **You MUST run this server over WSS (Secure WebSocket) in production.**
 
 ### My Personal Setup
 I currently run this server behind **Cloudflare** and **Nginx Proxy Manager (NPM)**, and it works flawlessly. Cloudflare provides DDoS protection and DNS routing, while NPM handles the SSL/TLS termination and proxies the WebSocket connection (`wss://`) to the internal Go container. 
